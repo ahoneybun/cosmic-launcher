@@ -1,4 +1,10 @@
-cosmic-launcher (0.1.0) UNRELEASED; urgency=medium
+cosmic-launcher (0.1.0ubuntu1) noble; urgency=medium
+
+  * Update to noble
+
+ -- Aaron Honeycutt <aaron@system76.com>  Fri, 22 Mar 2024 15:00:34 -0600
+
+cosmic-launcher (0.1.0) jammy; urgency=medium
 
   * Initial release.
 
