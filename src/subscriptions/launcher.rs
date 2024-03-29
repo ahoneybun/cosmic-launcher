@@ -47,24 +47,29 @@ async fn client_request<'a>(
                 let tx = tx.clone();
 
                 let (kill_tx, kill_rx) = tokio::sync::oneshot::channel();
+                let listener = async {
+                    tracing::info!("starting pop-launcher instance");
+                    let listener = Box::pin(async move {
+                        let mut responses = std::pin::pin!(responses);
+                        while let Some(response) = responses.next().await {
+                            let _res = tx.send(Event::Response(response)).await;
+                        }
+                    });
 
+                    let killswitch = Box::pin(async move {
+                        let _res = kill_rx.await;
+                    });
+
+                    futures::future::select(listener, killswitch).await;
+                };
+
+                #[cfg(feature = "console")]
                 let _res = tokio::task::Builder::new()
                     .name("pop-launcher listener")
-                    .spawn(async {
-                        tracing::info!("starting pop-launcher instance");
-                        let listener = Box::pin(async move {
-                            let mut responses = std::pin::pin!(responses);
-                            while let Some(response) = responses.next().await {
-                                let _res = tx.send(Event::Response(response)).await;
-                            }
-                        });
+                    .spawn(listener);
 
-                        let killswitch = Box::pin(async move {
-                            let _res = kill_rx.await;
-                        });
-
-                        futures::future::select(listener, killswitch).await;
-                    });
+                #[cfg(not(feature = "console"))]
+                let _res = tokio::task::spawn(listener);
 
                 let _res = new_client
                     .send(pop_launcher::Request::Search(String::new()))
@@ -86,53 +91,59 @@ pub fn service() -> impl Stream<Item = Event> + MaybeSend {
     let (requests_tx, mut requests_rx) = mpsc::channel(4);
     let (responses_tx, mut responses_rx) = mpsc::channel(4);
 
-    let _res = tokio::task::Builder::new()
-        .name("pop-launcher forwarder")
-        .spawn(async move {
-            let _res = responses_tx.send(Event::Started(requests_tx.clone())).await;
+    let service_future = async move {
+        let _res = responses_tx.send(Event::Started(requests_tx.clone())).await;
 
-            let client = &mut None;
+        let client = &mut None;
 
-            while let Some(request) = requests_rx.recv().await {
-                match request {
-                    Request::Search(s) => {
-                        if let Some((client, _)) = client_request(&responses_tx, client).await {
-                            let _res = client.send(pop_launcher::Request::Search(s)).await;
-                        }
+        while let Some(request) = requests_rx.recv().await {
+            match request {
+                Request::Search(s) => {
+                    if let Some((client, _)) = client_request(&responses_tx, client).await {
+                        let _res = client.send(pop_launcher::Request::Search(s)).await;
                     }
-                    Request::Activate(i) => {
-                        if let Some((client, _)) = client_request(&responses_tx, client).await {
-                            let _res = client.send(pop_launcher::Request::Activate(i)).await;
-                        }
+                }
+                Request::Activate(i) => {
+                    if let Some((client, _)) = client_request(&responses_tx, client).await {
+                        let _res = client.send(pop_launcher::Request::Activate(i)).await;
                     }
-                    Request::Context(i) => {
-                        if let Some((client, _)) = client_request(&responses_tx, client).await {
-                            let _res = client.send(pop_launcher::Request::Context(i)).await;
-                        }
+                }
+                Request::Context(i) => {
+                    if let Some((client, _)) = client_request(&responses_tx, client).await {
+                        let _res = client.send(pop_launcher::Request::Context(i)).await;
                     }
-                    Request::ActivateContext(id, context) => {
-                        if let Some((client, _)) = client_request(&responses_tx, client).await {
-                            let _res = client
-                                .send(pop_launcher::Request::ActivateContext { id, context })
-                                .await;
-                        }
+                }
+                Request::ActivateContext(id, context) => {
+                    if let Some((client, _)) = client_request(&responses_tx, client).await {
+                        let _res = client
+                            .send(pop_launcher::Request::ActivateContext { id, context })
+                            .await;
                     }
-                    Request::Close => {
-                        if let Some((mut client, kill)) = client.take() {
-                            tracing::info!("closing pop-launcher instance");
-                            let _res = kill.send(());
-                            let _res = client.child.kill().await;
-                            let _res = client.child.wait().await;
-                        }
+                }
+                Request::Close => {
+                    if let Some((mut client, kill)) = client.take() {
+                        tracing::info!("closing pop-launcher instance");
+                        let _res = kill.send(());
+                        let _res = client.child.kill().await;
+                        let _res = client.child.wait().await;
                     }
-                    Request::Complete(id) => {
-                        if let Some((client, _)) = client_request(&responses_tx, client).await {
-                            let _res = client.send(pop_launcher::Request::Complete(id)).await;
-                        }
+                }
+                Request::Complete(id) => {
+                    if let Some((client, _)) = client_request(&responses_tx, client).await {
+                        let _res = client.send(pop_launcher::Request::Complete(id)).await;
                     }
                 }
             }
-        });
+        }
+    };
+
+    #[cfg(feature = "console")]
+    let _res = tokio::task::Builder::new()
+        .name("pop-launcher forwarder")
+        .spawn(service_future);
+
+    #[cfg(not(feature = "console"))]
+    let _res = tokio::task::spawn(service_future);
 
     async_stream::stream! {
         while let Some(message) = responses_rx.recv().await {
